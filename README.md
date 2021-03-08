@@ -31,9 +31,9 @@ import (
 func main() {
     // ...
 
-    // Assume that zipFile1 and zipFile2 are two zip files that have been
-    // opened using os.Open(...).
-    zipFS, _ := zip.NewReader(zipFile1, file1Size)
+    // Assume that zipFile is a zip file that has been opened using os.Open,
+    // and that fileSize is its size.
+    zipFS, _ := zip.NewReader(zipFile, fileSize)
 
     // Create a SeekerFS in-memory.
     buffer := seeker_fs.NewSeekableBuffer()
