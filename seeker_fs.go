@@ -5,6 +5,7 @@
 package seeker_fs
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -27,6 +28,18 @@ type SeekerFS struct {
 	// be a pointer so that Sub() can return a new SeekerFS that shares a lock
 	// for the underlying ReadSeeker.
 	lock *sync.Mutex
+}
+
+// Walks the entire FS, checking for detectable errors with the format.
+func (f *SeekerFS) Validate() error {
+	// TODO: Implement f.Validate
+	//
+	// - Call Validate() on every file.
+	// - Check that every file's data is present in the data stream (use
+	//   Seek(0, io.SeekEnd) to get the size of the data stream).
+	// - Ensure that directory entries are all present and in alphabetical
+	//   order.
+	return fmt.Errorf("Validate not yet implemented")
 }
 
 // Holds the size of our *File struct, used for calculating byte offsets into
@@ -81,10 +94,14 @@ func (f *SeekerFS) readAtOffset(data []byte, location uint64) error {
 // Returns a new SeekerFS based on the given underlying data stream. Returns an
 // error if one occurs. Note that some errors (i.e. with an incorrectly
 // formatted data stream) may not appear until files are read or opened. Must
-// have a File struct at the start of the data stream.
-func NewSeekerFS(data io.ReadSeeker) (*SeekerFS, error) {
+// have a File struct at the start of the data stream (at offset 0).
+func LoadSeekerFS(data io.ReadSeeker) (*SeekerFS, error) {
 	var topFile File
-	e := binary.Read(data, binary.LittleEndian, &topFile)
+	_, e := data.Seek(0, io.SeekStart)
+	if e != nil {
+		return nil, fmt.Errorf("Failed seeking to data start: %w", e)
+	}
+	e = binary.Read(data, binary.LittleEndian, &topFile)
 	if e != nil {
 		return nil, fmt.Errorf("Couldn't read an initial file entry at the "+
 			"data start: %s", e)
@@ -330,8 +347,13 @@ func (f *SeekerFSFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		return nil, fmt.Errorf("Can't read dir entries in a regular file")
 	}
 	if f.readOffset >= f.f.Size {
+		if n <= 0 {
+			// A special case required by the FS interface.
+			return nil, nil
+		}
 		return nil, io.EOF
 	}
+
 	startEntry := f.readOffset
 	var endEntry uint64
 	if n <= 0 {
@@ -429,7 +451,7 @@ func compareFileName(f *File, p *SeekerFS, toCheck string) (int, error) {
 	}
 	// At this point, we know that both toCheck and our ShortName are at least
 	// 8 bytes, but we can still see if those first 8 bytes differ.
-	shortResult := strings.Compare(string(f.ShortName[0:8]), toCheck)
+	shortResult := bytes.Compare(f.ShortName[0:8], []byte(toCheck)[0:8])
 	if shortResult != 0 {
 		return shortResult, nil
 	}
@@ -461,7 +483,7 @@ func getNamedDirEntry(f *File, p *SeekerFS, name string) (*File, error) {
 	// directories to contain at most 0x7fffffff entries, so casting to an int
 	// should never overflow.
 	beginIndex := 0
-	endIndex := int(f.Size)
+	endIndex := int(f.Size - 1)
 	var currentEntry *File
 	var compareResult int
 	var currentIndex int
@@ -482,7 +504,7 @@ func getNamedDirEntry(f *File, p *SeekerFS, name string) (*File, error) {
 			// The names are equal
 			return currentEntry, nil
 		}
-		if compareResult < 0 {
+		if compareResult > 0 {
 			// currentEntry's name is less than name
 			endIndex = currentIndex - 1
 		} else {
@@ -553,13 +575,4 @@ func (p *SeekerFS) Sub(path string) (fs.FS, error) {
 		topFile: f,
 		lock:    p.lock,
 	}, nil
-}
-
-// Copies the entire contents of the arbitrary filesystem f into a new
-// SeekerFS, writing the SeekerFS's bytes to the output data stream. Returns an
-// error if any occurs.
-func CreateSeekerFS(f fs.FS, output io.Writer) error {
-	// TODO (next): Implement function for converting an arbitrary fs.FS into a
-	// SeekerFS.
-	return fmt.Errorf("Not yet implemented!")
 }
