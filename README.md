@@ -37,7 +37,7 @@ func main() {
 
     // Create a SeekerFS in-memory.
     buffer := seeker_fs.NewSeekableBuffer()
-    e := seeker_fs.CreateSeekerFS(zipFS, buffer)
+    e := seeker_fs.CreateSeekerFS(zipFS, buffer, nil)
     if e != nil {
         fmt.Printf("Error creating SeekerFS from zip: %s\n", e)
         return

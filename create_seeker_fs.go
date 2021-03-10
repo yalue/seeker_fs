@@ -23,6 +23,23 @@ type fileToProcess struct {
 	path string
 	// The offset in the output stream reserved for the file's header.
 	fileHeaderOffset int64
+	// The depth of this file. (The number of directories past root that
+	// must be traversed to reach it.)
+	depth int
+}
+
+// Used to specify limits on the creation of a SeekerFS.
+type CreateFSSettings struct {
+	// The maximum depth to which directories are traversed. Unlimited if <= 0.
+	MaxDepth int
+	// The maximum number of total bytes to write to the output. Unlimited if
+	// <= 0. This limit is on the maximum offset to which the WriteSeeker will
+	// be written; data overwriting earlier offsets without expanding the size
+	// of the buffer do not count towards this limit.
+	MaxOutputSize int64
+	// The maximum total number of files and directories to write to the
+	// output. Unlimited if <= 0.
+	MaxTotalEntries int64
 }
 
 // A simple type to wrap our depth-first traversal.
@@ -35,6 +52,11 @@ type outputQueue struct {
 	inputFS fs.FS
 	// The output data stream.
 	output io.WriteSeeker
+	// Specifies limits on the amount of data to write, etc.
+	settings *CreateFSSettings
+	// The number of files and directories that have been enqueued so far,
+	// including those that have already been processed.
+	totalFilesWritten int64
 }
 
 // Returns the current offset in the output data stream, or an error if it
@@ -57,12 +79,31 @@ func (q *outputQueue) seekToEnd() (int64, error) {
 	return newOffset, e
 }
 
+// Checks q's settings to see if writing data up to the given end offset
+// violates the maximum number of bytes written. Returns a suitable error if
+// so. Otherwise, returns nil.
+func (q *outputQueue) checkWriteLimit(newEnd int64) error {
+	limit := q.settings.MaxOutputSize
+	if limit <= 0 {
+		return nil
+	}
+	if newEnd > limit {
+		return fmt.Errorf("Output size limit (%d bytes) exceeded: trying to "+
+			"write %d bytes", limit, newEnd)
+	}
+	return nil
+}
+
 // Writes the arbitrary toWrite object at the end of the output stream, and
 // returns the offset where they were written (the stream's size before the new
 // data was written).
 func (q *outputQueue) writeDataAndGetLocation(toWrite interface{}) (int64,
 	error) {
 	toReturn, e := q.seekToEnd()
+	if e != nil {
+		return 0, e
+	}
+	e = q.checkWriteLimit(toReturn + int64(binary.Size(toWrite)))
 	if e != nil {
 		return 0, e
 	}
@@ -80,6 +121,10 @@ func (q *outputQueue) writeDataAtLocation(toWrite interface{},
 	if e != nil {
 		return fmt.Errorf("Couldn't seek to offset %d: %w", offset, e)
 	}
+	e = q.checkWriteLimit(offset + int64(binary.Size(toWrite)))
+	if e != nil {
+		return e
+	}
 	e = binary.Write(q.output, binary.LittleEndian, toWrite)
 	if e != nil {
 		return fmt.Errorf("Failed writing content at offset %d: %w", offset, e)
@@ -90,7 +135,18 @@ func (q *outputQueue) writeDataAtLocation(toWrite interface{},
 // Reserves space for the file's header in the output stream (by writing the
 // correct number of zeros), and enqueues the file in the list of files with
 // content to be written.
-func (q *outputQueue) reserveHeaderAndEnqueue(f fs.File, path string) error {
+func (q *outputQueue) reserveHeaderAndEnqueue(f fs.File, path string,
+	depth int) error {
+	// Check the limit on the number of files to write.
+	fileLimit := q.settings.MaxTotalEntries
+	if (fileLimit > 0) && (q.totalFilesWritten >= fileLimit) {
+		return fmt.Errorf("Exceeded limit of %d total files", fileLimit)
+	}
+	q.totalFilesWritten++
+	depthLimit := q.settings.MaxDepth
+	if (depthLimit > 0) && (depth > depthLimit) {
+		return fmt.Errorf("Exceeded directory depth limit of %d", depthLimit)
+	}
 	// Write an empty header to the end of the stream.
 	headerOffset, e := q.writeDataAndGetLocation(File{})
 	if e != nil {
@@ -101,6 +157,7 @@ func (q *outputQueue) reserveHeaderAndEnqueue(f fs.File, path string) error {
 		toProcess:        f,
 		path:             path,
 		fileHeaderOffset: headerOffset,
+		depth:            depth,
 	}
 	q.unprocessed = append(q.unprocessed, toEnqueue)
 	return nil
@@ -145,6 +202,10 @@ func (q *outputQueue) writeFileContent(queueEntry *fileToProcess,
 		dataOffset, e = q.seekToEnd()
 		if e != nil {
 			return fmt.Errorf("Failed seeking to data location: %w", e)
+		}
+		e = q.checkWriteLimit(dataOffset + size)
+		if e != nil {
+			return e
 		}
 		_, e = io.CopyN(q.output, f, size)
 		if e != nil {
@@ -243,7 +304,7 @@ func (q *outputQueue) writeDirContent(queueEntry *fileToProcess,
 		if e != nil {
 			return fmt.Errorf("Failed opening %s: %w", newPath, e)
 		}
-		e = q.reserveHeaderAndEnqueue(newFile, newPath)
+		e = q.reserveHeaderAndEnqueue(newFile, newPath, queueEntry.depth+1)
 		if e != nil {
 			return fmt.Errorf("Failed enqueueing %s: %w", newPath, e)
 		}
@@ -301,20 +362,29 @@ func (q *outputQueue) processNextFile() error {
 // Copies the entire contents of the arbitrary filesystem f into a new
 // SeekerFS, writing the SeekerFS's bytes to the output data stream. Returns an
 // error if any occurs. May be memory intensive, as it may potentially need to
-// buffer many directory entries before writing them to the output stream.
-func CreateSeekerFS(f fs.FS, output io.WriteSeeker) error {
+// buffer many directory entries before writing them to the output stream. The
+// settings struct enables setting limits on how many files or bytes to
+// process. Set the settings argument to nil to use default options. Returns an
+// error (likely with a partially-written output) if any limits are exceeded.
+func CreateSeekerFS(f fs.FS, output io.WriteSeeker,
+	settings *CreateFSSettings) error {
 	rootFile, e := f.Open(".")
 	if e != nil {
 		return fmt.Errorf("Error opening root file: %w", e)
+	}
+	// If no settings were provided, simply use the default zero values.
+	if settings == nil {
+		settings = &CreateFSSettings{}
 	}
 	queue := outputQueue{
 		unprocessed: make([]fileToProcess, 0, 1000),
 		inputFS:     f,
 		output:      output,
+		settings:    settings,
 	}
 
 	// Start the encoding by enqueuing the root directory.
-	e = (&queue).reserveHeaderAndEnqueue(rootFile, ".")
+	e = (&queue).reserveHeaderAndEnqueue(rootFile, ".", 0)
 	if e != nil {
 		return fmt.Errorf("Error enqueuing root directory for processing: %w",
 			e)
