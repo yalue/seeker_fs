@@ -40,6 +40,9 @@ type CreateFSSettings struct {
 	// The maximum total number of files and directories to write to the
 	// output. Unlimited if <= 0.
 	MaxTotalEntries int64
+	// If non-nil, creating the SeekerFS will result in human-readable status
+	// messages to this.
+	StatusLog io.Writer
 }
 
 // A simple type to wrap our depth-first traversal.
@@ -57,6 +60,13 @@ type outputQueue struct {
 	// The number of files and directories that have been enqueued so far,
 	// including those that have already been processed.
 	totalFilesWritten int64
+}
+
+func (q *outputQueue) LogStatus(format string, args ...interface{}) {
+	if q.settings.StatusLog == nil {
+		return
+	}
+	fmt.Fprintf(q.settings.StatusLog, format, args...)
 }
 
 // Returns the current offset in the output data stream, or an error if it
@@ -349,6 +359,7 @@ func (q *outputQueue) processNextFile() error {
 			return fmt.Errorf("Failed writing content for file %s: %w",
 				toProcess.path, e)
 		}
+		q.LogStatus("Wrote %s OK (%d bytes).\n", toProcess.path, stat.Size())
 		return nil
 	}
 	e = q.writeDirContent(&toProcess, stat)
@@ -356,6 +367,7 @@ func (q *outputQueue) processNextFile() error {
 		return fmt.Errorf("Failed writing content for directory %s: %w",
 			toProcess.path, e)
 	}
+	q.LogStatus("Wrote directory content for %s OK.\n", toProcess.path)
 	return nil
 }
 

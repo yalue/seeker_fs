@@ -13,10 +13,23 @@ func NewSeekableBuffer() *byte_utils.SeekableBuffer {
 	return byte_utils.NewSeekableBuffer()
 }
 
+// Used to log status messages as an io.Writer, using t.Logf
+type testLogger struct {
+	t *testing.T
+}
+
+func (l *testLogger) Write(data []byte) (int, error) {
+	l.t.Logf("Create FS status: %s", data)
+	return len(data), nil
+}
+
 func TestSeekerFS(t *testing.T) {
 	dirFS := os.DirFS("test_data/test_dir")
 	data := NewSeekableBuffer()
-	e := CreateSeekerFS(dirFS, data, nil)
+	settings := CreateFSSettings{
+		StatusLog: &testLogger{t},
+	}
+	e := CreateSeekerFS(dirFS, data, &settings)
 	if e != nil {
 		t.Logf("Failed creating seeker FS: %s\n", e)
 		t.FailNow()
@@ -105,6 +118,7 @@ func TestCreationLimits(t *testing.T) {
 		MaxDepth:        0,
 		MaxOutputSize:   0,
 		MaxTotalEntries: 1,
+		StatusLog:       &testLogger{t},
 	}
 
 	// First, see if the limit on total file count works.
