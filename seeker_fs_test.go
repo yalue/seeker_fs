@@ -1,12 +1,17 @@
 package seeker_fs
 
 import (
+	"github.com/yalue/byte_utils"
 	"io"
 	"os"
 	"testing"
 	"testing/fstest"
 	"time"
 )
+
+func NewSeekableBuffer() *byte_utils.SeekableBuffer {
+	return byte_utils.NewSeekableBuffer()
+}
 
 func TestSeekerFS(t *testing.T) {
 	dirFS := os.DirFS("test_data/test_dir")

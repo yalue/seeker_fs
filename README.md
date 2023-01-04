@@ -12,11 +12,6 @@ including the root `.` file.)
 To read an existing SeekerFS, pass an `io.ReadSeeker` to the
 `LoadSeekerFS(...)` function.
 
-The only `io.WriteSeeker` implementation that most Go users are likely to
-encounter is the `os.File` struct, so this library also  provides a
-`SeekableBuffer` type (mostly for testing), that implements `io.Reader`,
-`io.Writer`, and `io.Seeker` on an in-memory byte slice.
-
 
 Example Usage
 -------------
@@ -25,6 +20,7 @@ Example Usage
 import (
     "archive/zip"
     "fmt"
+    "github.com/yalue/byte_utils"
     "github.com/yalue/seeker_fs"
 )
 
@@ -36,7 +32,7 @@ func main() {
     zipFS, _ := zip.NewReader(zipFile, fileSize)
 
     // Create a SeekerFS in-memory.
-    buffer := seeker_fs.NewSeekableBuffer()
+    buffer := byte_utils.NewSeekableBuffer()
     e := seeker_fs.CreateSeekerFS(zipFS, buffer, nil)
     if e != nil {
         fmt.Printf("Error creating SeekerFS from zip: %s\n", e)
